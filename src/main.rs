@@ -36,7 +36,8 @@ struct ColWidth {
 }
 
 fn main() -> Res<()> {
-    let mut file = fs::File::open(&env::args().nth(1).expect("Expect filename"))?;
+    let mut file =
+        fs::File::open(&env::args().nth(1).expect("Expect filename"))?;
     let mut buffer = Vec::new();
     let _bytes_read: usize = file.read_to_end(&mut buffer)?;
 
@@ -46,6 +47,16 @@ fn main() -> Res<()> {
         },
         Object::Elf(ref elf) => {
             handle_elf(elf)?;
+        },
+        Object::Mach(ref mach) => {
+            match mach {
+                goblin::mach::Mach::Fat(ref _fat) => {
+                    failure::bail!("Fat Binaries not supported yet");
+                },
+                goblin::mach::Mach::Binary(ref macho) => {
+                    handle_macho(macho)?;
+                },
+            }
         },
         Object::Unknown(magic) => {
             eprintln!("Unknown magic number {} (0x{:x})", magic, magic);
@@ -176,7 +187,9 @@ fn handle_elf(elf: &goblin::elf::Elf) -> Res<()> {
     // http://blog.k3170makan.com/2018/10/introduction-to-elf-format-part-vi.html
 
     let strings = &elf.dynstrtab;
-    let mut dynsyms: Vec<_> = elf.dynsyms.iter()
+    let mut dynsyms: Vec<_> = elf
+        .dynsyms
+        .iter()
         .filter(|s| {
             let st_bind = (s.st_info) >> 4;
             let _st_type = (s.st_info) & 0xff;
@@ -259,6 +272,104 @@ fn handle_elf(elf: &goblin::elf::Elf) -> Res<()> {
                 "| {:>woffset$} | {:<wname$} | {:<wdemangled$} |",
                 format!("0x{:x}", symbol.st_info),
                 name,
+                "*",
+                woffset = colw.offset,
+                wname = colw.name,
+                wdemangled = colw.demangled,
+            );
+        }
+
+        // Bottom of the table
+        println!("{}", row_separator);
+    }
+
+    Ok(())
+}
+
+fn handle_macho(macho: &goblin::mach::MachO) -> Res<()> {
+    println!("{}", macho.name.unwrap_or("<unnamed>"));
+
+    let exports = macho.exports()?;
+
+    let mut symbols = vec![];
+    for export in &exports {
+        use goblin::mach::exports::ExportInfo;
+        if let ExportInfo::Regular { .. } = export.info {
+            let name = &export.name;
+            symbols.push(name);
+        } else {
+            // Skip Re-exports and stubs
+        }
+    }
+
+    // Print dynamic symbols as a table
+    {
+        let mut colw = ColWidth {
+            offset:    "Offset".len() + 2,
+            name:      "Exported Name".len() + 2,
+            demangled: "Demangled".len() + 2,
+        };
+        for symbol in &symbols {
+            colw.name = colw.name.max(symbol.len());
+            // TODO: Demangle names and check their length here
+        }
+        colw.name = colw.name.min(60);
+        println!(
+            "Table format: {} entries: {}, {}, {}",
+            symbols.len(),
+            colw.offset,
+            colw.name,
+            colw.demangled,
+        );
+
+        // Each new column adds 3 to the width.
+        // This does not include side padding.
+        let table_width = colw.offset + (3 + colw.name) + (3 + colw.demangled);
+
+        println!("+ {x:-<width$} +", x = "", width = table_width,);
+        let title = format!(
+            "Symbols for: {}{}",
+            macho.name.unwrap_or("<unnamed>"),
+            if macho.is_64 { " (x64)" } else { " (x86)" }
+        );
+        println!("| {:<width$} | ", title, width = table_width);
+
+        let row_separator = format!(
+            "+ {x:-<woffset$} + {x:-<wname$} + {x:-<wdemangled$} +",
+            x = "",
+            woffset = colw.offset,
+            wname = colw.name,
+            wdemangled = colw.demangled,
+        );
+
+        // Top of the header
+        println!(
+            "+ {x:-<woffset$} + {x:-<wname$} + {x:-<wdemangled$} +",
+            x = "",
+            woffset = colw.offset,
+            wname = colw.name,
+            wdemangled = colw.demangled,
+        );
+        // Header with column labels
+        println!(
+            "| {:^woffset$} | {:^wname$} | {:^wdemangled$} |",
+            "Zero",
+            "Symbol Name",
+            "Demangled",
+            woffset = colw.offset,
+            wname = colw.name,
+            wdemangled = colw.demangled,
+        );
+
+        // Bottom of header
+        println!("{}", row_separator);
+
+        // Each row
+        for symbol in &symbols {
+            println!(
+                "| {:>woffset$} | {:<wname$} | {:<wdemangled$} |",
+                format!("0x{:x}", 0x0),
+                symbol,
                 "*",
                 woffset = colw.offset,
                 wname = colw.name,
