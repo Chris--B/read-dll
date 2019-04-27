@@ -1,0 +1,9 @@
+[package]
+name = "read-sym"
+version = "0.1.0"
+authors = ["Chris Butler <chris.butler@amd.com>"]
+edition = "2018"
+
+[dependencies]
+goblin = "0.0.22"
+failure = "0.1"
