@@ -27,12 +27,27 @@ use goblin::Object;
 
 type Res<T> = Result<T, failure::Error>;
 
-/// Table Column Widths
-#[derive(Copy, Clone, Debug)]
-struct ColWidth {
-    offset:    usize,
-    name:      usize,
-    demangled: usize,
+#[derive(Clone, Debug)]
+enum FormatData {
+    Pe,
+    Elf,
+    MachO,
+    // MacFat // ??
+}
+
+#[derive(Clone, Debug, Default)]
+struct Symbol {
+    name:       String,
+    per_format: Option<FormatData>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct SharedLibrary {
+    name:          Option<String>,
+    symbols:       Vec<Symbol>,
+    is_lib:        bool,
+    is_64:         bool,
+    little_endian: bool,
 }
 
 fn main() -> Res<()> {
@@ -41,21 +56,16 @@ fn main() -> Res<()> {
     let mut buffer = Vec::new();
     let _bytes_read: usize = file.read_to_end(&mut buffer)?;
 
-    match Object::parse(&buffer)? {
-        Object::PE(ref pe) => {
-            handle_pe(pe)?;
-        },
-        Object::Elf(ref elf) => {
-            handle_elf(elf)?;
-        },
+    let lib = match Object::parse(&buffer)? {
+        Object::PE(ref pe) => handle_pe(pe)?,
+        Object::Elf(ref elf) => handle_elf(elf)?,
         Object::Mach(ref mach) => {
+            use goblin::mach::Mach;
             match mach {
-                goblin::mach::Mach::Fat(ref _fat) => {
+                Mach::Fat(ref _fat) => {
                     failure::bail!("Fat Binaries not supported yet");
                 },
-                goblin::mach::Mach::Binary(ref macho) => {
-                    handle_macho(macho)?;
-                },
+                Mach::Binary(ref macho) => handle_macho(macho)?,
             }
         },
         Object::Unknown(magic) => {
@@ -66,320 +76,177 @@ fn main() -> Res<()> {
             );
         },
         obj => {
-            let desc = format!("{:#?}", obj);
-            failure::bail!("Unhandled object type: {}", desc);
+            failure::bail!("Unhandled object type: {:#?}", obj);
         },
-    }
+    };
 
-    Ok(())
-}
+    println!("Found {} symbols", lib.symbols.len());
 
-fn handle_pe(pe: &goblin::pe::PE) -> Res<()> {
-    if !pe.is_lib {
-        eprintln!("PE parsed, but is not a library.");
-    }
-
-    // Print exports as a table
+    // if format == table
     {
-        let mut colw = ColWidth {
-            offset:    "Offset".len() + 2,
-            name:      "Exported Name".len() + 2,
-            demangled: "Demangled".len() + 2,
-        };
-        for export in &pe.exports {
-            if let Some(name) = export.name {
-                colw.name = colw.name.max(name.len());
-                // TODO: Demangle names and check their length here
-            }
-        }
-        println!(
-            "Table format: {} entries: {}, {}, {}",
-            pe.exports.len(),
-            colw.offset,
-            colw.name,
-            colw.demangled,
-        );
-
-        // Each new column adds 3 to the width.
-        // This does not include side padding.
-        let table_width = colw.offset + (3 + colw.name) + (3 + colw.demangled);
-
-        println!("+ {x:-<width$} +", x = "", width = table_width,);
-        let title = format!(
-            "Exports for: {}{}",
-            pe.name.unwrap_or("<unnamed>"),
-            if pe.is_64 { " (x64)" } else { " (x86)" }
-        );
-        println!("| {:<width$} | ", title, width = table_width);
-
-        let row_separator = format!(
-            "+ {x:-<woffset$} + {x:-<wname$} + {x:-<wdemangled$} +",
-            x = "",
-            woffset = colw.offset,
-            wname = colw.name,
-            wdemangled = colw.demangled,
-        );
-
-        let mut exports: Vec<&_> = pe.exports.iter().collect();
-        exports.sort_by(|e1, e2| {
-            // If an export has no name, sort it at the beginning by ordinal
-            // Otherwise, sort by name, ignoring case.
-            #[cfg_attr(rustfmt, rustfmt::skip)]
-            match (e1.name, e2.name) {
-                (None,         None)         => e1.offset.cmp(&e2.offset),
-                (None,         _)            => cmp::Ordering::Less,
-                (_,            None)         => cmp::Ordering::Greater,
-                (Some(ref n1), Some(ref n2)) => {
-                    let n1 = n1.to_ascii_lowercase();
-                    let n2 = n2.to_ascii_lowercase();
-                    n1.cmp(&n2)
-                },
-            }
-        });
-        // Top of the header
-        println!(
-            "+ {x:-<woffset$} + {x:-<wname$} + {x:-<wdemangled$} +",
-            x = "",
-            woffset = colw.offset,
-            wname = colw.name,
-            wdemangled = colw.demangled,
-        );
-        // Header with column labels
-        println!(
-            "| {:^woffset$} | {:^wname$} | {:^wdemangled$} |",
-            "Offset",
-            "Exported Name",
-            "Demangled",
-            woffset = colw.offset,
-            wname = colw.name,
-            wdemangled = colw.demangled,
-        );
-
-        // Bottom of header
-        println!("{}", row_separator);
-
-        // Each row
-        for export in &exports {
-            println!(
-                "| {:>woffset$} | {:<wname$} | {:<wdemangled$} |",
-                format!("0x{:x}", export.offset),
-                export.name.unwrap_or_default(),
-                "*",
-                woffset = colw.offset,
-                wname = colw.name,
-                wdemangled = colw.demangled,
-            );
-        }
-
-        // Bottom of the table
-        println!("{}", row_separator);
+        display_as_table(&lib);
     }
 
     Ok(())
 }
 
-fn handle_elf(elf: &goblin::elf::Elf) -> Res<()> {
-    if !elf.is_lib {
-        eprintln!("Elf parsed, but is not a library.");
-    }
-
-    // Helpful resource:
-    // http://blog.k3170makan.com/2018/10/introduction-to-elf-format-part-vi.html
-
-    let strings = &elf.dynstrtab;
-    let mut dynsyms: Vec<_> = elf
-        .dynsyms
+fn handle_pe(pe: &goblin::pe::PE) -> Res<SharedLibrary> {
+    let symbols = pe
+        .exports
         .iter()
-        .filter(|s| {
-            let st_bind = (s.st_info) >> 4;
-            let _st_type = (s.st_info) & 0xff;
-            s.is_function() && st_bind == goblin::elf::sym::STB_GLOBAL
+        .map(|export| {
+            Symbol {
+                // PE libraries can export functions only by ordinal, so they
+                // don't have a name. Don't care, just make it
+                // empty instead.
+                name:       export.name.unwrap_or_default().to_string(),
+                per_format: Some(FormatData::Pe),
+                /* per_format: FormatData::Pe {
+                 *     ordinal: export.ordinal,
+                 *     offset: export.offset,
+                 * } */
+            }
         })
         .collect();
-    dynsyms.sort_by_key(|s| &strings[s.st_name]);
-    let dynsyms = dynsyms;
 
-    // Print dynamic symbols as a table
-    {
-        let mut colw = ColWidth {
-            offset:    "Offset".len() + 2,
-            name:      "Exported Name".len() + 2,
-            demangled: "Demangled".len() + 2,
-        };
-        for symbol in &dynsyms {
-            let name = &strings[symbol.st_name];
-            colw.name = colw.name.max(name.len());
-            // TODO: Demangle names and check their length here
-        }
-        colw.name = colw.name.min(60);
-        println!(
-            "Table format: {} entries: {}, {}, {}",
-            dynsyms.len(),
-            colw.offset,
-            colw.name,
-            colw.demangled,
-        );
-
-        // Each new column adds 3 to the width.
-        // This does not include side padding.
-        let table_width = colw.offset + (3 + colw.name) + (3 + colw.demangled);
-
-        println!("+ {x:-<width$} +", x = "", width = table_width,);
-        let title = format!(
-            "Symbols for: {}{}",
-            elf.soname.unwrap_or("<unnamed>"),
-            if elf.is_64 { " (x64)" } else { " (x86)" }
-        );
-        println!("| {:<width$} | ", title, width = table_width);
-
-        let row_separator = format!(
-            "+ {x:-<woffset$} + {x:-<wname$} + {x:-<wdemangled$} +",
-            x = "",
-            woffset = colw.offset,
-            wname = colw.name,
-            wdemangled = colw.demangled,
-        );
-
-        // Top of the header
-        println!(
-            "+ {x:-<woffset$} + {x:-<wname$} + {x:-<wdemangled$} +",
-            x = "",
-            woffset = colw.offset,
-            wname = colw.name,
-            wdemangled = colw.demangled,
-        );
-        // Header with column labels
-        println!(
-            "| {:^woffset$} | {:^wname$} | {:^wdemangled$} |",
-            "st_info",
-            "Symbol Name",
-            "Demangled",
-            woffset = colw.offset,
-            wname = colw.name,
-            wdemangled = colw.demangled,
-        );
-
-        // Bottom of header
-        println!("{}", row_separator);
-
-        // Each row
-        for symbol in dynsyms {
-            let mut name = &strings[symbol.st_name];
-            if name.len() > 60 {
-                name = &name[..60];
-            }
-            println!(
-                "| {:>woffset$} | {:<wname$} | {:<wdemangled$} |",
-                format!("0x{:x}", symbol.st_info),
-                name,
-                "*",
-                woffset = colw.offset,
-                wname = colw.name,
-                wdemangled = colw.demangled,
-            );
-        }
-
-        // Bottom of the table
-        println!("{}", row_separator);
-    }
-
-    Ok(())
+    Ok(SharedLibrary {
+        name: pe.name.map(str::to_string),
+        symbols,
+        is_lib: pe.is_lib,
+        is_64: pe.is_64,
+        little_endian: true, // Windows and its binaries always LE (mostly)
+    })
 }
 
-fn handle_macho(macho: &goblin::mach::MachO) -> Res<()> {
-    println!("{}", macho.name.unwrap_or("<unnamed>"));
+fn handle_elf(elf: &goblin::elf::Elf) -> Res<SharedLibrary> {
+    // Helpful resource:
+    // http://blog.k3170makan.com/2018/10/introduction-to-elf-format-part-vi.html
+    let strings = &elf.dynstrtab;
 
+    let symbols = elf
+        .dynsyms
+        .iter()
+        .map(|dynsym| {
+            Symbol {
+                name:       strings[dynsym.st_name].to_string(),
+                per_format: Some(FormatData::Elf),
+                /* per_format: Some(Format::Elf {
+                 *      st_info: dynsym.st_info,
+                 * }, */
+            }
+        })
+        .collect();
+
+    Ok(SharedLibrary {
+        name: elf.soname.map(str::to_string),
+        symbols,
+        is_lib: elf.is_lib,
+        is_64: elf.is_64,
+        little_endian: elf.little_endian,
+    })
+}
+
+fn handle_macho(macho: &goblin::mach::MachO) -> Res<SharedLibrary> {
     let exports = macho.exports()?;
+    let symbols = exports
+        .iter()
+        .map(|export| {
+            // use goblin::mach::exports::ExportInfo::*;
+            // let export_type = match export.info {
+            //     Regular { .. } => {},
+            //     // ...
+            //     // ...
+            // };
+            Symbol {
+                name:       export.name.clone(),
+                per_format: Some(FormatData::MachO),
+            }
+        })
+        .collect();
 
-    let mut symbols = vec![];
-    for export in &exports {
-        use goblin::mach::exports::ExportInfo;
-        if let ExportInfo::Regular { .. } = export.info {
-            let name = &export.name;
-            symbols.push(name);
-        } else {
-            // Skip Re-exports and stubs
-        }
+    Ok(SharedLibrary {
+        name: macho.name.map(str::to_string),
+        symbols,
+        is_lib: true, // ???
+        is_64: macho.is_64,
+        little_endian: macho.little_endian,
+    })
+}
+
+fn display_as_table(lib: &SharedLibrary) {
+    #[derive(Copy, Clone, Debug)]
+    struct ColWidth {
+        name:      usize,
+        demangled: usize,
+    }
+    let mut colw = ColWidth {
+        name:      "Exported Name".len() + 2,
+        demangled: "Demangled".len() + 2,
+    };
+    for symbol in &lib.symbols {
+        colw.name = colw.name.max(symbol.name.len());
+    }
+    colw.name = colw.name.min(60);
+    println!(
+        "Table format: {} entries: {}, {}",
+        lib.symbols.len(),
+        colw.name,
+        colw.demangled,
+    );
+
+    // Each new column adds 3 to the width.
+    // This does not include side padding.
+    let table_width = colw.name + (3 + colw.demangled);
+
+    println!("+ {x:-<width$} +", x = "", width = table_width,);
+    let title = format!(
+        "Symbols for: {} ({} {} Endian)",
+        lib.name.as_ref().map(String::as_str).unwrap_or("<unnamed>"),
+        if lib.is_64 { "x64" } else { "x86" },
+        if lib.little_endian { "Little" } else { "Big" },
+    );
+    println!("| {:<width$} | ", title, width = table_width);
+
+    let row_separator = format!(
+        "+ {x:-<wname$} + {x:-<wdemangled$} +",
+        x = "",
+        wname = colw.name,
+        wdemangled = colw.demangled,
+    );
+
+    // Top of the header
+    println!(
+        "+ {x:-<wname$} + {x:-<wdemangled$} +",
+        x = "",
+        wname = colw.name,
+        wdemangled = colw.demangled,
+    );
+    // Header with column labels
+    println!(
+        "| {:^wname$} | {:^wdemangled$} |",
+        "Symbol Name",
+        "Demangled",
+        wname = colw.name,
+        wdemangled = colw.demangled,
+    );
+
+    // Bottom of header
+    println!("{}", row_separator);
+
+    // Each row
+    for symbol in &lib.symbols {
+        // TODO: Output this
+        let _per_format = &symbol.per_format;
+        println!(
+            "| {:<wname$} | {:<wdemangled$} |",
+            symbol.name,
+            // TODO: demangle(symbol.name),
+            "*",
+            wname = colw.name,
+            wdemangled = colw.demangled,
+        );
     }
 
-    // Print dynamic symbols as a table
-    {
-        let mut colw = ColWidth {
-            offset:    "Offset".len() + 2,
-            name:      "Exported Name".len() + 2,
-            demangled: "Demangled".len() + 2,
-        };
-        for symbol in &symbols {
-            colw.name = colw.name.max(symbol.len());
-            // TODO: Demangle names and check their length here
-        }
-        colw.name = colw.name.min(60);
-        println!(
-            "Table format: {} entries: {}, {}, {}",
-            symbols.len(),
-            colw.offset,
-            colw.name,
-            colw.demangled,
-        );
-
-        // Each new column adds 3 to the width.
-        // This does not include side padding.
-        let table_width = colw.offset + (3 + colw.name) + (3 + colw.demangled);
-
-        println!("+ {x:-<width$} +", x = "", width = table_width,);
-        let title = format!(
-            "Symbols for: {}{}",
-            macho.name.unwrap_or("<unnamed>"),
-            if macho.is_64 { " (x64)" } else { " (x86)" }
-        );
-        println!("| {:<width$} | ", title, width = table_width);
-
-        let row_separator = format!(
-            "+ {x:-<woffset$} + {x:-<wname$} + {x:-<wdemangled$} +",
-            x = "",
-            woffset = colw.offset,
-            wname = colw.name,
-            wdemangled = colw.demangled,
-        );
-
-        // Top of the header
-        println!(
-            "+ {x:-<woffset$} + {x:-<wname$} + {x:-<wdemangled$} +",
-            x = "",
-            woffset = colw.offset,
-            wname = colw.name,
-            wdemangled = colw.demangled,
-        );
-        // Header with column labels
-        println!(
-            "| {:^woffset$} | {:^wname$} | {:^wdemangled$} |",
-            "Zero",
-            "Symbol Name",
-            "Demangled",
-            woffset = colw.offset,
-            wname = colw.name,
-            wdemangled = colw.demangled,
-        );
-
-        // Bottom of header
-        println!("{}", row_separator);
-
-        // Each row
-        for symbol in &symbols {
-            println!(
-                "| {:>woffset$} | {:<wname$} | {:<wdemangled$} |",
-                format!("0x{:x}", 0x0),
-                symbol,
-                "*",
-                woffset = colw.offset,
-                wname = colw.name,
-                wdemangled = colw.demangled,
-            );
-        }
-
-        // Bottom of the table
-        println!("{}", row_separator);
-    }
-
-    Ok(())
+    // Bottom of the table
+    println!("{}", row_separator);
 }
