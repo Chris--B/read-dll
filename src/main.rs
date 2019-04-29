@@ -42,15 +42,9 @@ enum BinaryKind {
 /// Extra data that's unique to a format
 #[derive(Clone, Debug)]
 enum BinaryKindExtra {
-    Pe {
-        offset: usize,
-        rva:    usize,
-        size:   usize,
-    },
-    Elf {
-        st_info: u8,
-    },
-    MachO {},
+    Pe { offset: usize, rva: usize },
+    Elf { sym: goblin::elf::sym::Sym },
+    MachO { offset: u64, flags: u64 },
     // Others...?
 }
 
@@ -135,7 +129,6 @@ fn handle_pe(pe: &goblin::pe::PE) -> Res<SharedLibrary> {
                 extra: BinaryKindExtra::Pe {
                     offset: export.offset,
                     rva:    export.rva,
-                    size:   export.size,
                 },
             }
         })
@@ -162,9 +155,7 @@ fn handle_elf(elf: &goblin::elf::Elf) -> Res<SharedLibrary> {
         .map(|dynsym| {
             Symbol {
                 name:  strings[dynsym.st_name].to_string(),
-                extra: BinaryKindExtra::Elf {
-                    st_info: dynsym.st_info,
-                },
+                extra: BinaryKindExtra::Elf { sym: dynsym },
             }
         })
         .collect();
@@ -184,15 +175,19 @@ fn handle_macho(macho: &goblin::mach::MachO) -> Res<SharedLibrary> {
     let symbols = exports
         .iter()
         .map(|export| {
-            // use goblin::mach::exports::ExportInfo::*;
-            // let export_type = match export.info {
-            //     Regular { .. } => {},
-            //     // ...
-            //     // ...
-            // };
+            use goblin::mach::exports::ExportInfo::*;
+            let flags = match export.info {
+                Regular { flags, .. } => flags,
+                Reexport { flags, .. } => flags,
+                Stub { flags, .. } => flags,
+            };
+
             Symbol {
                 name:  export.name.clone(),
-                extra: BinaryKindExtra::MachO {},
+                extra: BinaryKindExtra::MachO {
+                    offset: export.offset,
+                    flags,
+                },
             }
         })
         .collect();
