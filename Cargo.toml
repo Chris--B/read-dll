@@ -7,3 +7,4 @@ edition = "2018"
 [dependencies]
 goblin = "0.0.22"
 failure = "0.1"
+msvc-demangler = "0.8"

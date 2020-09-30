@@ -65,51 +65,53 @@ struct SharedLibrary {
 }
 
 fn main() -> Res<()> {
-    let mut file =
-        fs::File::open(&env::args().nth(1).expect("Expect filename"))?;
-    let mut buffer = Vec::new();
-    let _bytes_read: usize = file.read_to_end(&mut buffer)?;
 
-    let lib = match Object::parse(&buffer)? {
-        Object::PE(ref pe) => handle_pe(pe)?,
-        Object::Elf(ref elf) => handle_elf(elf)?,
-        Object::Mach(ref mach) => {
-            use goblin::mach::Mach;
-            match mach {
-                Mach::Fat(ref _fat) => {
-                    failure::bail!("Fat Binaries not supported yet");
-                },
-                Mach::Binary(ref macho) => handle_macho(macho)?,
-            }
-        },
-        Object::Unknown(magic) => {
-            eprintln!("Unknown magic number {} (0x{:x})", magic, magic);
-            failure::bail!(
-                "Unhandled object type: {:?}",
-                Object::Unknown(magic)
-            );
-        },
-        obj => {
-            failure::bail!("Unhandled object type: {:#?}", obj);
-        },
-    };
+    for arg in env::args().skip(1) {
 
-    println!("Found {} symbols", lib.symbols.len());
+        let mut file =
+            fs::File::open(&arg)?;
+        let mut buffer = Vec::new();
+        let _bytes_read: usize = file.read_to_end(&mut buffer)?;
 
-    // if format == table
-    {
-        match display_as_table(&lib) {
-            // No issues print table
-            Ok(()) => {},
-            // We lost our connection to stdout.
-            // The most common cause of this - someone piped us into
-            // `head` or `less` and quit before we wrote everything.
-            // This is fine, and we should not complain about it.
-            Err(ref err) if err.kind() == io::ErrorKind::BrokenPipe => {},
-            // Something else failed - UNACCEPTABLE. COMPLAIN LOUDLY.
-            Err(err) => {
-                Err(err)?;
+        let lib = match Object::parse(&buffer)? {
+            Object::PE(ref pe) => handle_pe(pe)?,
+            Object::Elf(ref elf) => handle_elf(elf)?,
+            Object::Mach(ref mach) => {
+                use goblin::mach::Mach;
+                match mach {
+                    Mach::Fat(ref _fat) => {
+                        failure::bail!("Fat Binaries not supported yet");
+                    },
+                    Mach::Binary(ref macho) => handle_macho(macho)?,
+                }
             },
+            Object::Unknown(magic) => {
+                eprintln!("Unknown magic number {} (0x{:x})", magic, magic);
+                failure::bail!(
+                    "Unhandled object type: {:?}",
+                    Object::Unknown(magic)
+                );
+            },
+            obj => {
+                failure::bail!("Unhandled object type: {:#?}", obj);
+            },
+        };
+
+        // if format == table
+        {
+            match display_as_table(&lib) {
+                // No issues print table
+                Ok(()) => {},
+                // We lost our connection to stdout.
+                // The most common cause of this - someone piped us into
+                // `head` or `less` and quit before we wrote everything.
+                // This is fine, and we should not complain about it.
+                Err(ref err) if err.kind() == io::ErrorKind::BrokenPipe => {},
+                // Something else failed - UNACCEPTABLE. COMPLAIN LOUDLY.
+                Err(err) => {
+                    Err(err)?;
+                },
+            }
         }
     }
 
@@ -202,6 +204,16 @@ fn handle_macho(macho: &goblin::mach::MachO) -> Res<SharedLibrary> {
     })
 }
 
+fn demangle(name: &str) -> String {
+    let flags = msvc_demangler::DemangleFlags::llvm();
+
+    if let Ok(sym) = msvc_demangler::demangle(name, flags) {
+        sym
+    } else {
+        name.to_string()
+    }
+}
+
 /// Formats a table of exported symbols.
 ///
 /// ### Example
@@ -254,9 +266,12 @@ fn display_as_table(lib: &SharedLibrary) -> io::Result<()> {
     // Size the columns from the data
     for symbol in &lib.symbols {
         colw.name = colw.name.max(symbol.name.len());
+        let demangled_name =demangle(&symbol.name);
+        colw.demangled = colw.demangled.max(demangled_name.len());
     }
+
     // If the symbol names are crazy, or we hit a bug, limit the name length.
-    colw.name = colw.name.min(100);
+    colw.name = colw.name.min(200);
 
     // Each new column adds 3 to the width.
     // This does not include side padding.
@@ -315,10 +330,9 @@ fn display_as_table(lib: &SharedLibrary) -> io::Result<()> {
         for symbol in &lib.symbols {
             writeln!(
                 stdout,
-                "| {:<wname$} | {:<wdemangled$} |",
-                symbol.name,
-                // TODO: demangle(symbol.name),
-                "*",
+                "| {name:<wname$} | {demangled:<wdemangled$} |",
+                name=symbol.name,
+                demangled=demangle(&symbol.name),
                 wname = colw.name,
                 wdemangled = colw.demangled,
             )?;
