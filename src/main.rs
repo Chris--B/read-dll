@@ -65,11 +65,8 @@ struct SharedLibrary {
 }
 
 fn main() -> Res<()> {
-
     for arg in env::args().skip(1) {
-
-        let mut file =
-            fs::File::open(&arg)?;
+        let mut file = fs::File::open(&arg)?;
         let mut buffer = Vec::new();
         let _bytes_read: usize = file.read_to_end(&mut buffer)?;
 
@@ -87,10 +84,7 @@ fn main() -> Res<()> {
             },
             Object::Unknown(magic) => {
                 eprintln!("Unknown magic number {} (0x{:x})", magic, magic);
-                failure::bail!(
-                    "Unhandled object type: {:?}",
-                    Object::Unknown(magic)
-                );
+                failure::bail!("Unhandled object type: {:?}", Object::Unknown(magic));
             },
             obj => {
                 failure::bail!("Unhandled object type: {:#?}", obj);
@@ -266,7 +260,7 @@ fn display_as_table(lib: &SharedLibrary) -> io::Result<()> {
     // Size the columns from the data
     for symbol in &lib.symbols {
         colw.name = colw.name.max(symbol.name.len());
-        let demangled_name =demangle(&symbol.name);
+        let demangled_name = demangle(&symbol.name);
         colw.demangled = colw.demangled.max(demangled_name.len());
     }
 
@@ -331,8 +325,8 @@ fn display_as_table(lib: &SharedLibrary) -> io::Result<()> {
             writeln!(
                 stdout,
                 "| {name:<wname$} | {demangled:<wdemangled$} |",
-                name=symbol.name,
-                demangled=demangle(&symbol.name),
+                name = symbol.name,
+                demangled = demangle(&symbol.name),
                 wname = colw.name,
                 wdemangled = colw.demangled,
             )?;

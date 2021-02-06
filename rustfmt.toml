@@ -20,14 +20,12 @@ combine_control_expr = true
 
 # Let comments be a little wider
 wrap_comments = true
-max_width = 80
-comment_width = 80
+max_width = 100
+comment_width = 100
 format_strings = true
 
 brace_style = "SameLineWhere"
 control_brace_style = "AlwaysSameLine"
-
-fn_args_density = "Tall"
 
 empty_item_single_line = true
 fn_single_line = false
@@ -65,7 +63,6 @@ force_multiline_blocks = true
 normalize_comments = true
 remove_nested_parens = true
 
-# I'm already doing this manually, so definitely turn on!
 reorder_imports = true
 reorder_modules = true
 reorder_impl_items = true
@@ -81,9 +78,6 @@ use_field_init_shorthand = true
 # I'd be interested in the opposite of this:
 # convert foo().bar()? into try!(foo().bar())
 use_try_shorthand = true
-
-format_doc_comments = true
-overflow_delimited_expr = true
 
 # These look useful when TODOs and FIXMEs have real ticket/issue numbers
 # report_todo = "Unnumbered"
