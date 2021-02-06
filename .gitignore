@@ -1,2 +1,7 @@
 /target
 **/*.rs.bk
+
+# Sample libraries
+SDL/
+*.txt
+*.sh
