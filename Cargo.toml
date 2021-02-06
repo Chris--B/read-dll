@@ -1,10 +1,14 @@
 [package]
-name = "read-sym"
-version = "0.1.0"
-authors = ["Chris Butler <chris.butler@amd.com>"]
+name = "syms"
+version = "0.2.0"
+authors = ["Chris Butler <chrisbutler296@gmail.com>"]
 edition = "2018"
+description = "Quick utility to view exported symbols from binaries"
+readme = "README.md"
+repository = "https://github.com/Chris--B/symbols"
+license-file = "LICENSE"
 
 [dependencies]
-goblin = "0.0.22"
+goblin = "0.3.4"
 failure = "0.1"
 msvc-demangler = "0.8"
